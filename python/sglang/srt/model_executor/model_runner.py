@@ -797,7 +797,7 @@ class ModelRunner:
         b = torch.ones((16, 16), dtype=dtype, device=device)
         c = a @ b
         return c
-
+1111111111111111111
     def init_attention_backend(self):
         """Init attention kernel backend."""
         if self.server_args.attention_backend == "flashinfer":
