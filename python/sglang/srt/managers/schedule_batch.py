@@ -1333,6 +1333,7 @@ class ScheduleBatch:
                 )
             ),
             extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
+            req_pos=[(r.rid, len(r.output_ids)) for r in self.reqs],
         )
 
     def copy(self):
@@ -1416,6 +1417,9 @@ class ModelWorkerBatch:
     spec_info: Optional[Union[EagleVerifyInput, EagleDraftInput]] = None
     # If set, the output of the batch contains the hidden states of the run.
     capture_hidden_mode: CaptureHiddenMode = None
+
+    # HACK: let the ModelRunnerSim knows which reqs are decoding, well, it's an ugly hack
+    req_pos: Optional[List[Tuple[str, int]]] = None
 
 
 @triton.jit

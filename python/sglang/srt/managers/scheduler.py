@@ -110,6 +110,8 @@ from sglang.srt.utils import (
     suppress_other_loggers,
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
+from sglang.srt.model_executor.model_runner_sim import ForwardResultTracer
+
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +380,9 @@ class Scheduler(SchedulerOutputProcessorMixin):
                 (SetInternalStateReq, self.set_internal_state),
             ]
         )
+
+        # Init execution tracer
+        self.forward_result_tracer = ForwardResultTracer(server_args.enable_forward_result_tracing, tp_rank=self.tp_rank)
 
     def init_tokenizer(self):
         server_args = self.server_args
@@ -1265,6 +1270,11 @@ class Scheduler(SchedulerOutputProcessorMixin):
             # However, one minor issue is that this code path does not check the status of detokenizer manager.
             self.return_health_check_ct -= 1
             self.send_to_tokenizer.send_pyobj(HealthCheckOutput())
+        
+        # Trace the output of model forwarding
+        self.forward_result_tracer.trace(result.next_token_ids, batch)
+        self.forward_result_tracer.check_and_flush_finished_requests(batch)
+
 
     def prepare_dp_attn_batch(self, local_batch: ScheduleBatch):
         # Check if other DP workers have running batches
@@ -1753,6 +1763,9 @@ def run_scheduler_process(
                 "max_req_input_len": scheduler.max_req_input_len,
             }
         )
+
+        logger.error(f"scheduler.enable_overlap={scheduler.enable_overlap}")
+
         if scheduler.enable_overlap:
             scheduler.event_loop_overlap()
         else:

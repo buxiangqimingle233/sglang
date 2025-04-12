@@ -31,7 +31,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum, auto
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union, Tuple
+from copy import copy
 
 import torch
 import triton
@@ -222,6 +223,10 @@ class ForwardBatch:
     # For Qwen2-VL
     mrope_positions: torch.Tensor = None
 
+    # HACK: let the ModelRunnerSim knows which reqs are decoding, well, it's an ugly hack
+    req_pos: Optional[List[Tuple[str, int]]] = None
+
+
     @classmethod
     def init_new(
         cls,
@@ -261,6 +266,7 @@ class ForwardBatch:
             capture_hidden_mode=batch.capture_hidden_mode,
             input_embeds=batch.input_embeds,
             extend_input_logprob_token_ids_gpu=extend_input_logprob_token_ids_gpu,
+            req_pos=copy(batch.req_pos)
         )
 
         # For DP attention

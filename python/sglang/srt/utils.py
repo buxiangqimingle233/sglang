@@ -650,15 +650,50 @@ def prepare_model_and_tokenizer(model_path: str, tokenizer_path: str):
     return model_path, tokenizer_path
 
 
+# def configure_logger(server_args, prefix: str = ""):
+#     format = f"[%(asctime)s{prefix}] %(message)s"
+#     # format = f"[%(asctime)s.%(msecs)03d{prefix}] %(message)s"
+#     logging.basicConfig(
+#         level=getattr(logging, server_args.log_level.upper()),
+#         format=format,
+#         datefmt="%Y-%m-%d %H:%M:%S",
+#         force=True,
+#     )
+
+# Easier to read
 def configure_logger(server_args, prefix: str = ""):
-    format = f"[%(asctime)s{prefix}] %(message)s"
-    # format = f"[%(asctime)s.%(msecs)03d{prefix}] %(message)s"
-    logging.basicConfig(
-        level=getattr(logging, server_args.log_level.upper()),
-        format=format,
-        datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
-    )
+    """Configure colorful logging for the application."""
+    try:
+        import colorlog
+        
+        handler = colorlog.StreamHandler()
+        formatter = colorlog.ColoredFormatter(
+            "%(log_color)s[%(asctime)s{prefix}] %(message)s%(reset)s".format(prefix=prefix),
+            datefmt="%Y-%m-%d %H:%M:%S",
+            log_colors={
+                'DEBUG': 'cyan',
+                'INFO': 'green',
+                'WARNING': 'yellow',
+                'ERROR': 'red',
+                'CRITICAL': 'red,bg_white',
+            }
+        )
+        handler.setFormatter(formatter)
+        
+        # Get the root logger and set its handler and level
+        logger = logging.getLogger()
+        logger.handlers = []  # Remove any existing handlers
+        logger.addHandler(handler)
+        logger.setLevel(getattr(logging, server_args.log_level.upper()))
+    except ImportError:
+        # Fall back to standard logging if colorlog is not available
+        format = f"[%(asctime)s{prefix}] %(message)s"
+        logging.basicConfig(
+            level=getattr(logging, server_args.log_level.upper()),
+            format=format,
+            datefmt="%Y-%m-%d %H:%M:%S",
+            force=True,
+        )
 
 
 # source: https://github.com/vllm-project/vllm/blob/93b38bea5dd03e1b140ca997dfaadef86f8f1855/vllm/lora/utils.py#L9

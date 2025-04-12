@@ -179,6 +179,9 @@ class ServerArgs:
     debug_tensor_dump_input_file: Optional[str] = None
     debug_tensor_dump_inject: bool = False
 
+    # Execution Tracing
+    enable_forward_result_tracing: bool = False
+
     def __post_init__(self):
         # Set missing default values
         if self.tokenizer_path is None:
@@ -1012,6 +1015,11 @@ class ServerArgs:
             type=str,
             default=ServerArgs.debug_tensor_dump_inject,
             help="Inject the outputs from jax as the input of every layer.",
+        )
+        parser.add_argument(
+            "--enable-forward-result-tracing",
+            action="store_true",
+            help="Enable execution tracing.",
         )
 
     @classmethod

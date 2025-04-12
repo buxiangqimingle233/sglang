@@ -226,4 +226,6 @@ compile_commands.json
 # VSCode
 .vscode
 
-1
+# trace files
+trace/*
+profile_res/*
