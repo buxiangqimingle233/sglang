@@ -382,7 +382,7 @@ class Scheduler(SchedulerOutputProcessorMixin):
         )
 
         # Init execution tracer
-        self.forward_result_tracer = ForwardResultTracer(server_args.enable_forward_result_tracing, tp_rank=self.tp_rank)
+        self.forward_result_tracer = ForwardResultTracer(server_args.enable_forward_result_tracing, self.tp_rank)
 
     def init_tokenizer(self):
         server_args = self.server_args
@@ -1270,8 +1270,8 @@ class Scheduler(SchedulerOutputProcessorMixin):
             # However, one minor issue is that this code path does not check the status of detokenizer manager.
             self.return_health_check_ct -= 1
             self.send_to_tokenizer.send_pyobj(HealthCheckOutput())
-        
-        # Trace the output of model forwarding
+
+        # Trace model forward outputs
         self.forward_result_tracer.trace(result.next_token_ids, batch)
         self.forward_result_tracer.check_and_flush_finished_requests(batch)
 

@@ -694,3 +694,74 @@ class MHATokenToKVPoolHost:
         self.free_slots = torch.concat([self.free_slots, indices])
         self.can_use_mem_size += len(indices)
         return len(indices)
+
+
+
+class MHATokenToKVPoolSim(KVCache):
+    '''
+    Act as an MHATokenToKVPool, but do not actually allocate any buffer, always return with torch.zeros.
+    '''
+
+    def __init__(self, 
+        size: int,
+        page_size: int,
+        dtype: torch.dtype,
+        head_num: int,
+        head_dim: int,
+        layer_num: int,
+        device: str,
+        enable_memory_saver: bool,
+    ):
+        self.size = size
+        self.page_size = page_size
+        self.dtype = dtype
+        self.device = device
+
+        if dtype in (torch.float8_e5m2, torch.float8_e4m3fn):
+            # NOTE: Store as torch.uint8 because Tensor.index_put is not implemented for torch.float8_e5m2
+            self.store_dtype = torch.uint8
+        else:
+            self.store_dtype = dtype
+
+        self.head_num = head_num
+        self.head_dim = head_dim
+        self.layer_num = layer_num
+
+        
+        k_size = (self.size + self.page_size) * self.head_num * self.head_dim * self.layer_num * self.dtype.itemsize        
+        v_size = k_size
+        logger.info(
+            f"Dummy KV Cache is allocated. #tokens: {size}, K size: {k_size / GB:.2f} GB, V size: {v_size / GB:.2f} GB"
+        )
+    
+    # TODO: We could track something here
+    def get_key_buffer(self, layer_id: int) -> torch.Tensor:
+        logger.warning(
+            f"MHATokenToKVPoolSim:get_key_buffer() get called by layer {layer_id}, return with a dummy tensor"
+        )
+        return torch.zeros(1)
+    
+    def get_value_buffer(self, layer_id: int) -> torch.Tensor:
+        logger.warning(
+            f"MHATokenToKVPoolSim:get_value_buffer() get called by layer {layer_id}, return with a dummy tensor"
+        )
+        return torch.zeros(1)
+    
+    def get_kv_buffer(self, layer_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        logger.warning(
+            f"MHATokenToKVPoolSim:get_kv_buffer() get called by layer {layer_id}, return with a dummy tensor"
+        )
+        return torch.zeros(1)
+    
+    def set_kv_buffer(
+        self,
+        layer: RadixAttention,
+        loc: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+    ) -> None:
+        logger.warning(
+            f"MHATokenToKVPoolSim:set_kv_buffer() get called, nothing is done"
+        )
+        return None
+    

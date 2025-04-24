@@ -116,6 +116,7 @@ class Engine:
         # The input prompt. It can be a single prompt or a batch of prompts.
         prompt: Optional[Union[List[str], str]] = None,
         sampling_params: Optional[Union[List[Dict], Dict]] = None,
+        rid: Optional[Union[List[str], str]] = None,
         # The token ids for text; one can either specify text or input_ids.
         input_ids: Optional[Union[List[List[int]], List[int]]] = None,
         # The image input. It can be a file name, a url, or base64 encoded string.
@@ -152,6 +153,7 @@ class Engine:
             custom_logit_processor=custom_logit_processor,
             return_hidden_states=return_hidden_states,
             stream=stream,
+            rid=rid,
         )
         loop = asyncio.get_event_loop()
         generator = self.tokenizer_manager.generate_request(obj, None)

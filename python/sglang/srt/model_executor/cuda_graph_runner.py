@@ -208,6 +208,8 @@ class CudaGraphRunner:
         if self.enable_torch_compile:
             set_torch_compile_config()
 
+        self.dump_cuda_graph = model_runner.server_args.enable_cuda_graph_dump
+
         # Graph inputs
         with torch.device("cuda"):
             self.input_ids = torch.zeros((self.max_num_token,), dtype=torch.int64)
@@ -250,6 +252,8 @@ class CudaGraphRunner:
         try:
             with self.model_capture_mode():
                 self.capture()
+            # if model_runner.server_args.enable_cuda_graph_dump:
+            #     self.cuda_graph_dump()
         except RuntimeError as e:
             raise Exception(
                 f"Capture cuda graph failed: {e}\n"
@@ -342,6 +346,8 @@ class CudaGraphRunner:
 
     def capture_one_batch_size(self, bs: int, forward: Callable):
         graph = torch.cuda.CUDAGraph()
+        if self.dump_cuda_graph:
+            graph.enable_debug_mode()
         stream = self.stream
         num_tokens = bs * self.num_tokens_per_bs
 
@@ -432,6 +438,8 @@ class CudaGraphRunner:
             out = run_once()
 
         global_graph_memory_pool = graph.pool()
+        if self.dump_cuda_graph:
+            graph.debug_dump(f"./trace/bs{bs}_cudagraph_dump.dot")
         return graph, out
 
     def recapture_if_needed(self, forward_batch: ForwardBatch):

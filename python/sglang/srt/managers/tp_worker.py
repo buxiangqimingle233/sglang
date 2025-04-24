@@ -33,6 +33,7 @@ from sglang.srt.managers.schedule_batch import ModelWorkerBatch, global_server_a
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool, TokenToKVPoolAllocator
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.model_runner_sim import ModelRunnerSim
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import MultiprocessingSerializer, broadcast_pyobj, set_random_seed
 
@@ -71,18 +72,33 @@ class TpModelWorker:
             dtype=server_args.dtype,
             quantization=server_args.quantization,
         )
-        self.model_runner = ModelRunner(
-            model_config=self.model_config,
-            mem_fraction_static=server_args.mem_fraction_static,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-            tp_size=server_args.tp_size,
-            nccl_port=nccl_port,
-            server_args=server_args,
-            is_draft_worker=is_draft_worker,
-            req_to_token_pool=req_to_token_pool,
-            token_to_kv_pool_allocator=token_to_kv_pool_allocator,
-        )
+
+        if server_args.enable_model_runner_sim:
+            self.model_runner = ModelRunnerSim(
+                model_config=self.model_config,
+                mem_fraction_static=server_args.mem_fraction_static,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                tp_size=server_args.tp_size,
+                nccl_port=nccl_port,
+                server_args=server_args,
+                is_draft_worker=is_draft_worker,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            )
+        else:
+            self.model_runner = ModelRunner(
+                model_config=self.model_config,
+                mem_fraction_static=server_args.mem_fraction_static,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                tp_size=server_args.tp_size,
+                nccl_port=nccl_port,
+                server_args=server_args,
+                is_draft_worker=is_draft_worker,
+                req_to_token_pool=req_to_token_pool,
+                token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            )
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None
         else:

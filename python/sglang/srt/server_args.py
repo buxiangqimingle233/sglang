@@ -182,6 +182,13 @@ class ServerArgs:
     # Execution Tracing
     enable_forward_result_tracing: bool = False
 
+    # Cuda Graph Dump
+    enable_cuda_graph_dump: bool = False
+
+    # RunnerSim
+    enable_model_runner_sim: bool = False
+    sim_gpu_memory: int = 1024
+
     def __post_init__(self):
         # Set missing default values
         if self.tokenizer_path is None:
@@ -1021,6 +1028,23 @@ class ServerArgs:
             action="store_true",
             help="Enable execution tracing.",
         )
+        parser.add_argument(
+            "--enable-cuda-graph-dump",
+            action="store_true",
+            help="Enable cuda graph dump",
+        )
+        parser.add_argument(
+            "--enable-model-runner-sim", 
+            action="store_true",
+            help="Enable model runner simulation.",
+        )
+        parser.add_argument(
+            "--sim-gpu-memory", 
+            type=int,
+            default=ServerArgs.sim_gpu_memory,
+            help="Simulate GPU memory usage.",
+        )
+        
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):

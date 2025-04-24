@@ -223,7 +223,7 @@ class ForwardBatch:
     # For Qwen2-VL
     mrope_positions: torch.Tensor = None
 
-    # HACK: let the ModelRunnerSim knows which reqs are decoding, well, it's an ugly hack
+    # HACK: let the ModelRunnerSim knows which reqs are decoding
     req_pos: Optional[List[Tuple[str, int]]] = None
 
 
