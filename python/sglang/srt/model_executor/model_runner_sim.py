@@ -35,6 +35,7 @@ from sglang.srt.distributed import (
     get_tp_group,
     init_distributed_environment,
     initialize_model_parallel,
+    set_custom_all_reduce
 )
 from sglang.srt.layers.dp_attention import (
     get_attention_tp_group,
@@ -338,8 +339,10 @@ class ModelRunnerSim(ModelRunner):
         logger.warning("We do not actually initialize collective primitives in simulation mode.")
 
         # We omit to init the AllReduce engine since it will be never called in simulation mode. 
+        if not self.server_args.enable_p2p_check:
+            monkey_patch_p2p_access_check()
+        set_custom_all_reduce(not self.server_args.disable_custom_all_reduce)
 
-        
         if self.server_args.dist_init_addr:
             dist_init_method = f"tcp://{self.server_args.dist_init_addr}"
         else:

@@ -24,8 +24,9 @@ def setup_gpu_env():
 
 def setup_cpu_env():
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  
+    
 
-def trace_execution():
+def trace():
     setup_gpu_env()
     
     import sglang as sgl
@@ -38,7 +39,7 @@ def trace_execution():
         "log_level": "info",
         "enable_forward_result_tracing": True,
         "enable_cuda_graph_dump": False,
-        "disable_cuda_graph": True,     # FIXME: The flashinfer backend has something wrong with cuda graph (@cuda121, torch251)
+        "disable_cuda_graph": True,
         "trace_file": "./trace/test_trace.jsonl"
     }
     sampling_params = {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 1024 * 8}    # CoT models love speaking
@@ -53,17 +54,16 @@ def trace_execution():
         print(f"RID: {rid} input-length: f{len(prompts[int(rid)])} output-length: {len(output['text'])}")
 
 
-def replay():
-    setup_cpu_env()
+def replay_with_gpu():
+    setup_gpu_env()
     
     import sglang as sgl
     
     config = {
         "model_path": cot_llama_path,
-        "tp_size": 8,
-        "device": "cpu",
-        "attention_backend": "torch_native",
-        "base_gpu_id": 0,
+        "tp_size": 2,       # Must corresponds to the number of GPUs
+        "base_gpu_id": 2,
+        "device": "cuda",
         "disable_overlap_schedule": True,
         "log_level": "info",
         "disable_cuda_graph": True,
@@ -73,7 +73,35 @@ def replay():
         "sim_gpu_memory": 1024,
         "trace_file": "./trace/am-sample.jsonl"
     }
+
+
+    sampling_params = {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 1024 * 8}    # Well, CoT models like speaking too much
+
+    llm = sgl.Engine(**config)
+    outputs = llm.generate(prompts, sampling_params, rid=rids)
+
+
+def replay_with_cpu():
+    setup_cpu_env()
+
+    import sglang as sgl
     
+    config = {
+        "model_path": cot_llama_path,
+        "tp_size": 8,       # Arbitrary
+        "base_gpu_id": 0,
+        "device": "cuda",
+        "attention_backend": "torch_native",
+        "disable_overlap_schedule": True,
+        "log_level": "info",
+        "disable_cuda_graph": True,
+        "enable_model_runner_sim": True,
+        "enable_forward_result_tracing": False,
+        "enable_cuda_graph_dump": False,
+        "sim_gpu_memory": 1024,
+        "trace_file": "./trace/am-sample.jsonl"
+    }
+
     sampling_params = {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 1024 * 8}    # Well, CoT models like speaking too much
 
     llm = sgl.Engine(**config)
@@ -105,7 +133,7 @@ def replay_llama_distill():
 
 def main():
     # trace_execution()
-    replay()
+    replay_with_cpu()
 
 
 if __name__ == "__main__":
