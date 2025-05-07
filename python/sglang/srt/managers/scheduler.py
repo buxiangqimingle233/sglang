@@ -382,7 +382,7 @@ class Scheduler(SchedulerOutputProcessorMixin):
         )
 
         # Init execution tracer
-        self.forward_result_tracer = ForwardResultTracer(server_args.enable_forward_result_tracing, self.tp_rank)
+        self.forward_result_tracer = ForwardResultTracer(server_args=server_args, tp_rank=self.tp_rank)
 
     def init_tokenizer(self):
         server_args = self.server_args

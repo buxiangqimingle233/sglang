@@ -251,14 +251,18 @@ class GroupCoordinator:
         )
 
         self.pynccl_comm: Optional[PyNcclCommunicator] = None
-        if use_pynccl and self.world_size > 1:
+
+        # PyNcclCommunicator only works well with CUDA devices, CPU seems not work. 
+        # if use_pynccl and self.world_size > 1:
+        if use_pynccl and self.world_size > 1 and is_cuda_alike():
             self.pynccl_comm = PyNcclCommunicator(
                 group=self.cpu_group,
                 device=self.device,
             )
 
         self.ca_comm: Optional[CustomAllreduce] = None
-        if use_custom_allreduce and self.world_size > 1:
+        # if use_custom_allreduce and self.world_size > 1:
+        if use_custom_allreduce and self.world_size > 1 and is_cuda_alike():
             # Initialize a custom fast all-reduce implementation.
             self.ca_comm = CustomAllreduce(
                 group=self.cpu_group,

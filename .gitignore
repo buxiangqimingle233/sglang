@@ -229,3 +229,4 @@ compile_commands.json
 # trace files
 trace/*
 profile_res/*
+*.pkl

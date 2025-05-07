@@ -8,14 +8,12 @@ This enables us to decouple the functionality and the performance, thereby enabl
 """
 
 import os
-import atexit
 import json
 import logging
 from collections import defaultdict
 import pickle
-from turtle import forward
 import torch
-import time
+import datetime
 
 from typing import List, Optional, Tuple, Union, Dict, Any
 from sglang.srt.configs.model_config import ModelConfig
@@ -31,6 +29,20 @@ from sglang.srt.mem_cache.paged_allocator import PagedTokenToKVPoolAllocator
 from sglang.srt.configs.model_config import AttentionArch, ModelConfig
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPoolSim, TokenToKVPoolAllocator
 from sglang.srt.layers.dp_attention import get_attention_tp_size
+from sglang.srt.configs.load_config import LoadConfig
+import torch.distributed as dist
+from sglang.srt.distributed import (
+    get_tp_group,
+    init_distributed_environment,
+    initialize_model_parallel,
+)
+from sglang.srt.layers.dp_attention import (
+    get_attention_tp_group,
+    get_attention_tp_size,
+    initialize_dp_attention,
+)
+
+UNBALANCED_MODEL_LOADING_TIMEOUT_S = 300
 
 
 from sglang.srt.utils import (
@@ -62,19 +74,20 @@ class ForwardResultTracer:
     the original execution flow.
     """
     
-    trace_file_path = "trace/model_trace__0.jsonl"
     
-    def __init__(self, enable_execution_tracing: bool = False, tp_rank: int = 0):
-        self.should_trace = enable_execution_tracing and tp_rank == 0  # Only log on rank 0 to avoid duplication
-        self.tp_rank = tp_rank
+    def __init__(self, *args, **kwargs):
+
+        self.tp_rank = kwargs["tp_rank"]
+        self.should_trace = kwargs["server_args"].enable_forward_result_tracing and self.tp_rank == 0  # Only log on rank 0 to avoid duplication
 
         self._trace_cache = defaultdict(list)  # Using request ID -> [output_ids]
         self._finished_requests = set()  # Track completed request IDs
 
         self.logger = logger
+        self.trace_file = kwargs["server_args"].trace_file
 
         if self.should_trace:
-            self.logger.info(f"ModelTracer initialized for tp_rank: {tp_rank}")
+            self.logger.info(f"ModelTracer initialized for tp_rank: {self.tp_rank}")
             self._initialize_trace_file()
 
     def trace(self, 
@@ -104,7 +117,7 @@ class ForwardResultTracer:
 
 
     # TODO: the ForwardResultTracer executes at the Scheduler's subprocess, which would be killed by main process 
-    # via srt/utils.py:kill_process_tree when it terminates. This disables us to register an elegant cache flushing
+    # via srt/utils.py:kill_process_tree when it terminates. This obstacles us to register an elegant cache flushing
     # procedure at the process exit time. To avoid bugs, we need to dump the trace at each batch ends. It may introduce
     # overheads due to the frequent file writes. 
     def check_and_flush_finished_requests(self, schedule_batch: ScheduleBatch) -> None:
@@ -121,10 +134,10 @@ class ForwardResultTracer:
     def _initialize_trace_file(self):
         """Create the trace file with timestamp at first call."""
         # Create trace directory if it doesn't exist
-        if not os.path.exists(os.path.dirname(self.trace_file_path)):
-            os.makedirs(os.path.dirname(self.trace_file_path), exist_ok=True)
-        open(self.trace_file_path, "w").close()                      # Create an empty file
-        self.logger.info(f"Trace stored to {self.trace_file_path}")
+        if not os.path.exists(os.path.dirname(self.trace_file)):
+            os.makedirs(os.path.dirname(self.trace_file), exist_ok=True)
+        open(self.trace_file, "w").close()                      # Create an empty file
+        self.logger.info(f"Trace stored to {self.trace_file}")
     
     def _mark_request_completed(self, request_id: str) -> None:
         """Mark a request as completed so it can be flushed to disk."""
@@ -133,16 +146,16 @@ class ForwardResultTracer:
             self.logger.info(f"Request {request_id} marked as completed")
 
     def _flush_finished_requests(self) -> None:
-        if not self._finished_requests or not self.trace_file_path:
+        if not self._finished_requests or not self.trace_file:
             return
         
         requests_to_flush = self._finished_requests.intersection(self._trace_cache.keys())
         if not requests_to_flush:
             return
-        self.logger.info(f"Flushing {len(requests_to_flush)} completed requests to {self.trace_file_path}")
+        self.logger.info(f"Flushing {len(requests_to_flush)} completed requests to {self.trace_file}")
 
         try:
-            with open(self.trace_file_path, 'a') as f:
+            with open(self.trace_file, 'a') as f:
                 for rid in requests_to_flush:
                     f.write(json.dumps({rid: self._trace_cache[rid]}) + "\n")
                     # Remove from cache after flushing
@@ -178,26 +191,127 @@ class ModelRunnerSim(ModelRunner):
     def __init__(self, *args, **kwargs):
         logger.warning(f"Simulating execution with {kwargs["server_args"].sim_gpu_memory}GB memory/worker.")
         self.sim_gpu_memory = kwargs["server_args"].sim_gpu_memory      # We could assume an GPU memory with arbitrary sizes
+        self.trace_file = kwargs["server_args"].trace_file
 
         super(ModelRunnerSim, self).__init__(*args, **kwargs)
-        self._load_trace(ForwardResultTracer.trace_file_path)
+        self._load_trace()
 
-    def _load_trace(self, trace_path) -> Dict[str, Dict]:
-        if not os.path.exists(ForwardResultTracer.trace_file_path):
+    def _load_trace(self):
+        if not os.path.exists(self.trace_file):
             raise RuntimeError(
-                f"Trace file {ForwardResultTracer.trace_file_path} does not exist. "
+                f"Trace file {self.trace_file} does not exist. "
             )
         self.traces = defaultdict(dict)
-        with open(trace_path, "r") as f:
+        with open(self.trace_file, "r") as f:
             for line in f:
                 try:
                     for rid, next_token_ids in json.loads(line).items():
                         self.traces[rid] = next_token_ids
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to decode JSON: {e}")
-        logger.info(f"Loaded {len(self.traces)} traces from {trace_path}")
+        logger.info(f"Loaded {len(self.traces)} traces from {self.trace_file}")
 
-    # FIXME: I'm not sure if we have to override init_torch_distributed, which set the collectives at parent class initialization. 
+    # FIXME: We need to implement a individual ``device`` to manage the simulated memory. 
+    def _get_available_gpu_memory_sim(self, device, gpu_id, distributed=False, empty_cache=True):
+        return self.sim_gpu_memory
+
+    def load_model(self):
+        before_avail_memory = self._get_available_gpu_memory_sim(self.device, self.gpu_id)
+        logger.info(
+            f"Load weight begin. avail mem={self._get_available_gpu_memory_sim(self.device, self.gpu_id):.2f} GB"
+        )
+
+        # This can reduce thread conflicts and speed up weight loading.
+        if self.device != "cpu":
+            torch.set_num_threads(1)
+        if self.device == "cuda":
+            if torch.cuda.get_device_capability()[0] < 8:
+                logger.info(
+                    "Compute capability below sm80. Use float16 due to lack of bfloat16 support."
+                )
+                self.server_args.dtype = "float16"
+                self.model_config.dtype = torch.float16
+                if torch.cuda.get_device_capability()[1] < 5:
+                    raise RuntimeError("SGLang only supports sm75 and above.")
+
+        set_cuda_arch()
+
+        # Prepare the model config
+        self.load_config = LoadConfig(
+            load_format=self.server_args.load_format,
+            download_dir=self.server_args.download_dir,
+        )
+        if self.server_args.load_format == "gguf":
+            monkey_patch_vllm_gguf_config()
+
+        # We do not actually need to load the model
+
+        # monkey_patch_vllm_parallel_state()
+        # monkey_patch_isinstance_for_vllm_base_layer()
+
+        # with self.memory_saver_adapter.region():
+        #     self.model = get_model(
+        #         model_config=self.model_config,
+        #         load_config=self.load_config,
+        #         device_config=DeviceConfig(self.device),
+        #     )
+        # monkey_patch_vllm_parallel_state(reverse=True)
+        # monkey_patch_isinstance_for_vllm_base_layer(reverse=True)
+
+        self.model = None
+        
+        if self.server_args.kv_cache_dtype == "fp8_e4m3":
+            if self.server_args.quantization_param_path is not None:
+                if callable(getattr(self.model, "load_kv_cache_scales", None)):
+                    self.model.load_kv_cache_scales(
+                        self.server_args.quantization_param_path
+                    )
+                    logger.info(
+                        "Loaded KV cache scaling factors from %s",
+                        self.server_args.quantization_param_path,
+                    )
+                else:
+                    raise RuntimeError(
+                        "Using FP8 KV cache and scaling factors provided but "
+                        "model %s does not support loading scaling factors.",
+                        self.model.__class__,
+                    )
+            else:
+                logger.warning(
+                    "Using FP8 KV cache but no scaling factors "
+                    "provided. Defaulting to scaling factors of 1.0. "
+                    "This may lead to less accurate results!"
+                )
+
+        # Parse other args
+        self.sliding_window_size = (
+            self.model.get_attention_sliding_window_size()
+            if hasattr(self.model, "get_attention_sliding_window_size")
+            else None
+        )
+        self.dtype = self.model_config.dtype
+
+        after_avail_memory = self._get_available_gpu_memory_sim(self.device, self.gpu_id)
+        logger.info(
+            f"Load weight end. "
+            f"type={type(self.model).__name__}, "
+            f"dtype={self.dtype}, "
+            f"avail mem={after_avail_memory:.2f} GB, "
+            f"mem usage={(before_avail_memory - after_avail_memory):.2f} GB."
+        )
+
+        # Handle the case where some ranks do not finish loading.
+        try:
+            dist.monitored_barrier(
+                group=get_tp_group().cpu_group,
+                timeout=datetime.timedelta(seconds=UNBALANCED_MODEL_LOADING_TIMEOUT_S),
+                wait_all_ranks=True,
+            )
+        except RuntimeError:
+            raise ValueError(
+                f"TP rank {self.tp_rank} could finish the model loading, but there are other ranks that didn't finish loading. It is likely due to unexpected failures (e.g., OOM) or a slow node."
+            ) from None
+
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
         self.memory_saver_adapter = TorchMemorySaverAdapter.create(
@@ -206,7 +320,7 @@ class ModelRunnerSim(ModelRunner):
 
         # Load the model
         self.sampler = Sampler()
-        self.load_model()       # TODO: well, just in case of some strange invoking from the outside world like TPWorker.
+        self.load_model()       
 
         # Init memory pool and attention backends
         self.init_memory_pool(
@@ -219,6 +333,48 @@ class ModelRunnerSim(ModelRunner):
         self.cuda_graph_runner = None
         self.attn_backend = SimAttnBackend(self)
 
+    def init_torch_distributed(self):
+        logger.info("Init torch distributed begin.")
+        logger.warning("We do not actually initialize collective primitives in simulation mode.")
+
+        # We omit to init the AllReduce engine since it will be never called in simulation mode. 
+
+        
+        if self.server_args.dist_init_addr:
+            dist_init_method = f"tcp://{self.server_args.dist_init_addr}"
+        else:
+            dist_init_method = f"tcp://127.0.0.1:{self.dist_port}"
+
+        backend = "gloo"        # Just make the init proc happy with the CPU-only env, check https://docs.pytorch.org/docs/stable/distributed.html
+
+        if not self.is_draft_worker:
+            # Only initialize the distributed environment on the target model worker.
+            init_distributed_environment(
+                backend=backend,
+                world_size=self.tp_size,
+                rank=self.tp_rank,
+                local_rank=self.gpu_id,
+                distributed_init_method=dist_init_method,
+                timeout=self.server_args.dist_timeout,
+            )
+            initialize_model_parallel(tensor_model_parallel_size=self.tp_size)
+            initialize_dp_attention(
+                enable_dp_attention=self.server_args.enable_dp_attention,
+                tp_rank=self.tp_rank,
+                tp_size=self.tp_size,
+                dp_size=self.server_args.dp_size,
+            )
+
+        self.tp_group = get_tp_group()
+        self.attention_tp_group = get_attention_tp_group()
+
+        logger.info(
+            f"Init torch distributed ends."
+        )
+    
+        return self._get_available_gpu_memory_sim(
+            self.device, self.gpu_id, distributed=self.tp_size > 1
+        )
 
     def init_memory_pool(
         self,
@@ -242,7 +398,7 @@ class ModelRunnerSim(ModelRunner):
                 f"Unsupported kv_cache_dtype: {self.server_args.kv_cache_dtype}."
             )
 
-        self.max_total_num_tokens = self.profile_max_num_token(self.sim_gpu_memory)
+        self.max_total_num_tokens = self.profile_max_num_token(total_gpu_memory)
 
         if max_num_reqs is None:
             max_num_reqs = min(
@@ -335,21 +491,15 @@ class ModelRunnerSim(ModelRunner):
                     kvcache=self.token_to_kv_pool,
                 )
 
-    cnt = 0
-
     def forward(
         self, forward_batch: ForwardBatch, skip_attn_backend_init: bool = False
     ) -> LogitsProcessorOutput:
         # Get the info of forward_batch here
         # out_cache_loc_cpu = forward_batch.out_cache_loc.detach().cpu().tolist()
+
         kvc_indices = forward_batch.req_to_token_pool.req_to_token[forward_batch.req_pool_indices]
-        if self.cnt == 0:
-            pickle.dump(kvc_indices, open("nonzero_counts.pkl", "wb"))
-            self.cnt += 1
-        elif self.cnt < 100:
-            pickle.dump(kvc_indices, open("nonzero_counts.pkl", "ab"))
-            self.cnt += 1
-        
+        # TODO: Do something about the kvc_indices, conduct it at the device module
+                
         if forward_batch.forward_mode.is_decode():
             pass
         elif forward_batch.forward_mode.is_extend():
@@ -370,17 +520,19 @@ class ModelRunnerSim(ModelRunner):
     ) -> torch.Tensor:
     
         next_token_ids = torch.zeros(len(forward_batch.req_pos), dtype=torch.int32, device=self.device)
-        
         for i, (rid, output_loc) in enumerate(forward_batch.req_pos):
-            next_token_ids[i] = self.traces[rid][output_loc]        # FIXME: Actually, the ``next-toekn`` refer to trace[output_loc + 1]. But that will result in an indexing error
-                                                                    # for those requests that are truncated by the context limit, since the truncatation would happen after 
-                                                                    # sampling. We choose to use trace[output_loc] instead trace[output_loc + 1] to avoid this issue. 
-
+            try:
+                next_token_ids[i] = self.traces[rid][output_loc]        # FIXME: Actually, the ``next-toekn`` refer to trace[output_loc + 1]. But that will result in indexing errors
+                                                                    # for those requests that are truncated by the context limit, since the truncatation would happen after sampling. 
+                                                                    # So we use trace[output_loc] instead of trace[output_loc + 1] here.
+            except KeyError as e:
+                logger.error(f"KeyError: {rid} not found in traces.")
+                raise e
         return next_token_ids
         
 
     def profile_max_num_token(self, total_gpu_memory: int):
-        available_gpu_memory = self.sim_gpu_memory - 10   # TODO: we need a virtual device to manage the simulated memory
+        available_gpu_memory = self._get_available_gpu_memory_sim(self.device, self.gpu_id, distributed=self.tp_size > 1)
         if (
             self.model_config.attention_arch == AttentionArch.MLA
             and not self.server_args.disable_mla

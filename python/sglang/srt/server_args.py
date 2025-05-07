@@ -188,6 +188,7 @@ class ServerArgs:
     # RunnerSim
     enable_model_runner_sim: bool = False
     sim_gpu_memory: int = 1024
+    trace_file: Optional[str] = None
 
     def __post_init__(self):
         # Set missing default values
@@ -1044,7 +1045,12 @@ class ServerArgs:
             default=ServerArgs.sim_gpu_memory,
             help="Simulate GPU memory usage.",
         )
-        
+        parser.add_argument(
+            "--trace-file",
+            type=str,
+            default=ServerArgs.trace_file,
+            help="The trace file that records the output_loc for every served request.",
+        )
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
